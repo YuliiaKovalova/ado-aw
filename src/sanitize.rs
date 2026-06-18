@@ -259,7 +259,37 @@ fn remove_xml_comments(input: &str) -> String {
 }
 
 /// Convert HTML/XML tags to safe HTML entities (IS-06).
+///
+/// Fenced code blocks (```` ``` ````/`~~~`) are passed through **verbatim**: a
+/// Markdown renderer (including Azure DevOps) renders fenced code literally and
+/// never interprets HTML inside it, so escaping there is unnecessary for XSS
+/// defense — and it is actively destructive to an applyable ```` ```suggestion ````
+/// block, whose body must round-trip byte-for-byte (escaping `<`→`&lt;` would
+/// make the *applied* file contain literal `&lt;`). Skipping the escape inside
+/// fences matches the renderer's own behavior, so untrusted HTML smuggled into a
+/// fence stays inert. Content outside fences is escaped exactly as before.
 fn escape_html_tags(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut in_fence = false;
+
+    for line in input.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        if body.trim_start().starts_with("```") || body.trim_start().starts_with("~~~") {
+            // The fence delimiter line itself carries no tags worth escaping.
+            in_fence = !in_fence;
+            result.push_str(line);
+        } else if in_fence {
+            result.push_str(line);
+        } else {
+            result.push_str(&escape_html_tags_segment(line));
+        }
+    }
+    result
+}
+
+/// Escape HTML/XML tags in a single non-fenced segment.
+fn escape_html_tags_segment(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
 
@@ -439,6 +469,31 @@ mod tests {
         assert_eq!(
             escape_html_tags(r#"<a href="evil">"#),
             r#"&lt;a href="evil"&gt;"#
+        );
+    }
+
+    #[test]
+    fn test_fenced_suggestion_block_is_not_escaped() {
+        // A ```suggestion block must round-trip byte-for-byte so the applied
+        // change writes literal `<`/`>`, not `&lt;`/`&gt;`.
+        let input = "Bump it.\n\n```suggestion\n    <Version>10.0.5</Version>\n```";
+        let out = escape_html_tags(input);
+        assert!(
+            out.contains("    <Version>10.0.5</Version>"),
+            "fenced code must stay literal, got: {out}"
+        );
+        assert!(!out.contains("&lt;"), "no escaping inside the fence: {out}");
+    }
+
+    #[test]
+    fn test_html_outside_fence_still_escaped_with_fence_present() {
+        // Tags OUTSIDE the fence are still neutralized even when a fence exists.
+        let input = "<script>evil</script>\n```\n<b>literal</b>\n```";
+        let out = escape_html_tags(input);
+        assert!(out.contains("&lt;script&gt;evil&lt;/script&gt;"), "{out}");
+        assert!(
+            out.contains("<b>literal</b>"),
+            "in-fence stays literal: {out}"
         );
     }
 
