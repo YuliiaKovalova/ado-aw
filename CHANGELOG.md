@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.38.0](https://github.com/githubnext/ado-aw/compare/v0.37.0...v0.38.0) (2026-06-18)
+
+
+### Features
+
+* **compile:** add internal supply-chain feed/registry mirror ([#1080](https://github.com/githubnext/ado-aw/issues/1080)) ([a4300e6](https://github.com/githubnext/ado-aw/commit/a4300e66e4af738a64916325223429c55e39d7e3))
+* **ir:** add EnvValue::RuntimeExpression variant to prevent $[] in step env ([#1082](https://github.com/githubnext/ado-aw/issues/1082)) ([17f314b](https://github.com/githubnext/ado-aw/commit/17f314b3472dedb10bdc434af0d29b52ce0bdddf))
+* **ir:** add typed helper for CmdLine@2 ([#1083](https://github.com/githubnext/ado-aw/issues/1083)) ([14ebe83](https://github.com/githubnext/ado-aw/commit/14ebe838443ee4fd8fef376f41ab334e8454fad5))
+* **ir:** add typed helper for DeleteFiles@1 ([#1071](https://github.com/githubnext/ado-aw/issues/1071)) ([8d8dbb2](https://github.com/githubnext/ado-aw/commit/8d8dbb2b4e4375dc093576d07cb4cf8b2e22b104))
+* **ir:** add typed helper for DownloadPipelineArtifact@2 ([#1063](https://github.com/githubnext/ado-aw/issues/1063)) ([a647fd9](https://github.com/githubnext/ado-aw/commit/a647fd933f08c42f7997870f781ab95764389636))
+* **ir:** add typed helper for ExtractFiles@1 ([#1042](https://github.com/githubnext/ado-aw/issues/1042)) ([33284df](https://github.com/githubnext/ado-aw/commit/33284dfe978f861da42a5e564a379a1051f0f0fd))
+* **ir:** add typed helper for Npm@1 ([#1077](https://github.com/githubnext/ado-aw/issues/1077)) ([19a8532](https://github.com/githubnext/ado-aw/commit/19a8532091546e7dd60ee2b866f5117cf1fa5b67))
+* **ir:** add typed helper for NuGetCommand@2 ([#1047](https://github.com/githubnext/ado-aw/issues/1047)) ([513643e](https://github.com/githubnext/ado-aw/commit/513643e3cb417711a7ebcd42806bdf63238afe75))
+* **ir:** add typed helper for PublishPipelineArtifact@1 ([#1065](https://github.com/githubnext/ado-aw/issues/1065)) ([9dc3176](https://github.com/githubnext/ado-aw/commit/9dc3176097c21c61337aeedc74187abc687fef64))
+* **ir:** add typed helpers for Docker@2 ([#1086](https://github.com/githubnext/ado-aw/issues/1086)) ([9f738c4](https://github.com/githubnext/ado-aw/commit/9f738c4da5252f72697403dacb5faec824b9328b))
+* **ir:** add typed helpers for PowerShell@2 ([#1051](https://github.com/githubnext/ado-aw/issues/1051)) ([c752f81](https://github.com/githubnext/ado-aw/commit/c752f81dd360c8cf9c7e4e9136756fbde105f313))
+
+
+### Bug Fixes
+
+* **ado:** detect ADO sign-in HTML response in list and report auth error ([#1044](https://github.com/githubnext/ado-aw/issues/1044)) ([77bee77](https://github.com/githubnext/ado-aw/commit/77bee7749fda54da38e3c739621b812e6b41007b))
+* **smoke:** target ADO agent-definitions repo for PR/git-write smokes ([#1045](https://github.com/githubnext/ado-aw/issues/1045)) ([aae77f6](https://github.com/githubnext/ado-aw/commit/aae77f65e33b4bc32262cbda4c2faafd7580bde9))
+
 ## [0.37.0](https://github.com/githubnext/ado-aw/compare/v0.36.0...v0.37.0) (2026-06-15)
 
 
