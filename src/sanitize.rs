@@ -268,6 +268,11 @@ fn remove_xml_comments(input: &str) -> String {
 /// make the *applied* file contain literal `&lt;`). Skipping the escape inside
 /// fences matches the renderer's own behavior, so untrusted HTML smuggled into a
 /// fence stays inert. Content outside fences is escaped exactly as before.
+///
+/// On non-fenced lines, inline code spans (`` `...` ``) are likewise preserved
+/// verbatim by [`escape_line_preserving_inline_code`] — Markdown renders inline
+/// code literally too, so `Mock.Of<IProgress>()` inside backticks must not become
+/// `Mock.Of&lt;IProgress&gt;()`.
 fn escape_html_tags(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut in_fence = false;
@@ -282,13 +287,68 @@ fn escape_html_tags(input: &str) -> String {
         } else if in_fence {
             result.push_str(line);
         } else {
-            result.push_str(&escape_html_tags_segment(line));
+            result.push_str(&escape_line_preserving_inline_code(line));
         }
     }
     result
 }
 
-/// Escape HTML/XML tags in a single non-fenced segment.
+/// Escape HTML tags on a single non-fenced line, leaving inline code spans
+/// (`` `...` ``) verbatim. A code span opens with a run of `k` backticks and
+/// closes with the next run of *exactly* `k` backticks (CommonMark). An unmatched
+/// opening run is treated as literal backticks, and the remainder is escaped
+/// normally — so HTML can never escape a code span to evade neutralization.
+fn escape_line_preserving_inline_code(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut rest = line;
+
+    while let Some(tick) = rest.find('`') {
+        result.push_str(&escape_html_tags_segment(&rest[..tick]));
+        let after = &rest[tick..];
+        let k = after.bytes().take_while(|&b| b == b'`').count();
+        let (open, content_and_rest) = after.split_at(k);
+
+        match find_backtick_run(content_and_rest, k) {
+            Some(close_start) => {
+                // `open` + literal span content + closing run, none escaped.
+                result.push_str(open);
+                result.push_str(&content_and_rest[..close_start]);
+                result.push_str(&content_and_rest[close_start..close_start + k]);
+                rest = &content_and_rest[close_start + k..];
+            }
+            None => {
+                // No closing run on this line: backticks are literal; keep escaping.
+                result.push_str(open);
+                rest = content_and_rest;
+            }
+        }
+    }
+    result.push_str(&escape_html_tags_segment(rest));
+    result
+}
+
+/// Byte offset of the first run of *exactly* `k` consecutive backticks in `s`,
+/// or `None`. Backtick runs of a different length are span content, not a close.
+fn find_backtick_run(s: &str, k: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            if i - start == k {
+                return Some(start);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Escape HTML/XML tags in a single non-fenced, non-code segment.
 fn escape_html_tags_segment(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
@@ -495,6 +555,31 @@ mod tests {
             out.contains("<b>literal</b>"),
             "in-fence stays literal: {out}"
         );
+    }
+
+    #[test]
+    fn test_inline_code_span_is_not_escaped() {
+        // Inline code renders literally in Markdown, so HTML inside backticks
+        // must not become entities.
+        let out = escape_html_tags("Use `Mock.Of<IProgress>()` here.");
+        assert_eq!(out, "Use `Mock.Of<IProgress>()` here.");
+    }
+
+    #[test]
+    fn test_inline_code_preserved_but_surrounding_html_escaped() {
+        let out = escape_html_tags("<b>x</b> and `a<c>b` then <i>y</i>");
+        assert_eq!(
+            out,
+            "&lt;b&gt;x&lt;/b&gt; and `a<c>b` then &lt;i&gt;y&lt;/i&gt;"
+        );
+    }
+
+    #[test]
+    fn test_unmatched_backtick_does_not_smuggle_html() {
+        // A lone (unclosed) backtick must NOT open a code span that hides HTML —
+        // the tag after it is still escaped.
+        let out = escape_html_tags("a ` <script>evil</script>");
+        assert!(out.contains("&lt;script&gt;evil&lt;/script&gt;"), "{out}");
     }
 
     #[test]
