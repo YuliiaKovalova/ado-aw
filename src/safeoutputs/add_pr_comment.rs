@@ -20,6 +20,14 @@ pub struct AddPrCommentParams {
     pub pull_request_id: i32,
 
     /// Comment text in markdown format. Ensure adequate content > 10 characters.
+    ///
+    /// For an inline comment (with `file_path` + `line`), include a fenced
+    /// ```` ```suggestion ```` block holding the **whole corrected line(s)** to
+    /// render a one-click "Apply suggestion". The framework anchors the thread to
+    /// the entire target line range, so the applied change replaces the line(s)
+    /// cleanly — write the suggestion body byte-for-byte (literal `<`, `>`, `&`,
+    /// `"`; never HTML entities) with the original indentation, and no trailing
+    /// newline inside the fence.
     pub content: String,
 
     /// Repository alias: "self" for pipeline repo, or an alias from the checkout list.
@@ -28,12 +36,14 @@ pub struct AddPrCommentParams {
     pub repository: String,
 
     /// File path for an inline comment. When set, the comment is anchored to this file.
+    /// A `suggestion` block in `content` becomes an applyable single-line change.
     #[serde(default)]
     pub file_path: Option<String>,
 
     /// Starting line number for a multi-line inline comment. Requires `file_path` and `line`.
     /// When set, the comment spans from `start_line` to `line`. Must be strictly less than
     /// `line` (use `line` alone for single-line comments — do not pass `start_line == line`).
+    /// A `suggestion` block in `content` then applies across the whole `start_line..line` range.
     #[serde(default)]
     pub start_line: Option<i32>,
 
@@ -199,6 +209,56 @@ fn validate_file_path(path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Compute the ADO right-side end offset that makes an inline thread cover the
+/// **entire** target line: `(UTF-16 length of the line's text) + 1`.
+///
+/// When a `suggestion` is applied, ADO replaces the half-open range
+/// `[rightFileStart, rightFileEnd)`. Anchoring the end at the start of the same
+/// line (offset 1) is a zero-width range, so ADO *inserts* the suggestion and
+/// leaves the original line in place (a duplicated line); anchoring at the start
+/// of the *next* line swallows the trailing newline and joins the following line
+/// onto the suggestion. Measuring the line text and pointing one past its last
+/// character makes "Apply suggestion" a clean, full-line replacement.
+///
+/// Offsets are 1-based and counted in UTF-16 code units, matching ADO's editor
+/// model. Returns `None` when the file or line cannot be read, in which case the
+/// caller falls back to the legacy end offset of 1 (acceptable for a plain inline
+/// comment, whose anchor does not need to span an exact range).
+fn line_end_offset(
+    source_directory: &std::path::Path,
+    file_path: &str,
+    line: i32,
+) -> Option<usize> {
+    if line < 1 {
+        return None;
+    }
+    let contents = std::fs::read_to_string(source_directory.join(file_path)).ok()?;
+    // `str::lines()` strips the trailing `\n`/`\r\n`; guard against a lone `\r`.
+    let text = contents.lines().nth((line - 1) as usize)?;
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    Some(text.encode_utf16().count() + 1)
+}
+
+/// Build the ADO `threadContext` for an inline comment anchored to a file.
+///
+/// The right-side range spans from the **start of `start_line`** to **`end_offset`
+/// on `end_line`** (`start_line == end_line` for a single line). With `end_offset`
+/// set to the last line's `(UTF-16 length) + 1` by [`line_end_offset`], applying a
+/// `suggestion` replaces the whole `start_line..=end_line` block cleanly — single
+/// and multi-line suggestions use the same shape.
+fn inline_thread_context(
+    file_path: &str,
+    start_line: i32,
+    end_line: i32,
+    end_offset: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "filePath": format!("/{}", file_path),
+        "rightFileStart": { "line": start_line, "offset": 1 },
+        "rightFileEnd": { "line": end_line, "offset": end_offset }
+    })
+}
+
 #[async_trait::async_trait]
 impl Executor for AddPrCommentResult {
     fn dry_run_summary(&self) -> String {
@@ -330,15 +390,24 @@ impl Executor for AddPrCommentResult {
             "status": status_int
         });
 
-        // Add thread context for inline comments
+        // Add thread context for inline comments. For an applyable `suggestion`,
+        // the end anchor must span the whole target line — see `line_end_offset`.
         if let Some(ref fp) = self.file_path {
             let end_line = self.line.unwrap_or(1);
             let start_line = self.start_line.unwrap_or(end_line);
-            thread_body["threadContext"] = serde_json::json!({
-                "filePath": format!("/{}", fp),
-                "rightFileStart": { "line": start_line, "offset": 1 },
-                "rightFileEnd": { "line": end_line, "offset": 1 }
-            });
+            let end_offset =
+                line_end_offset(&ctx.source_directory, fp, end_line).unwrap_or_else(|| {
+                    debug!(
+                        "add-pr-comment: could not measure {}:{} under {}; falling back to \
+                         end offset 1 (an applyable suggestion may not apply cleanly)",
+                        fp,
+                        end_line,
+                        ctx.source_directory.display()
+                    );
+                    1
+                });
+            thread_body["threadContext"] =
+                inline_thread_context(fp, start_line, end_line, end_offset);
         }
 
         let client = reqwest::Client::new();
@@ -571,6 +640,56 @@ allowed-statuses:
         // ".." within a component name is not a traversal — must be accepted
         assert!(validate_file_path("releases..notes/v1.md").is_ok());
         assert!(validate_file_path("v2..beta/file.txt").is_ok());
+    }
+
+    #[test]
+    fn test_line_end_offset_is_utf16_len_plus_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "adoaw_offset_{}_{}",
+            std::process::id(),
+            "lineend"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rel = "Sample.cs";
+        // line 1 = "first line" (10), line 2 = "    second" (10), line 3 = "café" (4)
+        std::fs::write(dir.join(rel), "first line\n    second\ncafé\n").unwrap();
+
+        // Offset = (line length in UTF-16 code units) + 1, covering the whole line.
+        assert_eq!(line_end_offset(&dir, rel, 1), Some(11));
+        assert_eq!(line_end_offset(&dir, rel, 2), Some(11));
+        // "café" is 4 UTF-16 code units (é is BMP) -> 5
+        assert_eq!(line_end_offset(&dir, rel, 3), Some(5));
+        // Out-of-range line, missing file, and non-positive line -> None (fallback).
+        assert_eq!(line_end_offset(&dir, rel, 99), None);
+        assert_eq!(line_end_offset(&dir, "missing.cs", 1), None);
+        assert_eq!(line_end_offset(&dir, rel, 0), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_inline_thread_context_single_line() {
+        // A single-line anchor: start and end on the same line; end offset spans
+        // the whole line so an applied suggestion is a clean one-line replace.
+        let tc = inline_thread_context("cs/src/Foo.cs", 27, 27, 74);
+        assert_eq!(tc["filePath"], "/cs/src/Foo.cs");
+        assert_eq!(tc["rightFileStart"]["line"], 27);
+        assert_eq!(tc["rightFileStart"]["offset"], 1);
+        assert_eq!(tc["rightFileEnd"]["line"], 27);
+        assert_eq!(tc["rightFileEnd"]["offset"], 74);
+    }
+
+    #[test]
+    fn test_inline_thread_context_multi_line() {
+        // A multi-line anchor: start of the first line to end of the last line.
+        // The end offset is measured from the last line, never line+1, so the
+        // block is replaced without joining the following line.
+        let tc = inline_thread_context("Directory.Packages.props", 9, 12, 45);
+        assert_eq!(tc["filePath"], "/Directory.Packages.props");
+        assert_eq!(tc["rightFileStart"]["line"], 9);
+        assert_eq!(tc["rightFileStart"]["offset"], 1);
+        assert_eq!(tc["rightFileEnd"]["line"], 12);
+        assert_eq!(tc["rightFileEnd"]["offset"], 45);
     }
 
     #[test]

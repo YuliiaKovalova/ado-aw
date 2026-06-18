@@ -292,6 +292,31 @@ Adds a new comment thread to a pull request.
 - `start_line` *(optional)* - Starting line for a multi-line inline comment range. Requires `file_path` and `line`, and must be strictly less than `line`.
 - `status` *(optional)* - Initial thread status: `"active"` (default), `"fixed"`, `"wont-fix"`, `"closed"`, or `"by-design"`. Subject to the `allowed-statuses` allowlist.
 
+**Inline applyable suggestions:**
+
+When `file_path` + `line` are set and `content` contains a fenced
+` ```suggestion ` block, the thread renders as a one-click **"Apply suggestion"**.
+The framework anchors the thread to the **whole target line range** —
+`rightFileStart = {line: start_line, offset: 1}` to
+`rightFileEnd = {line: line, offset: <UTF-16 length of the last line> + 1}` — so
+applying the suggestion replaces the line(s) cleanly. This is the offset that
+makes suggestions work:
+
+- A zero-width end anchor (`offset: 1` on both ends) makes ADO *insert* the
+  suggestion and leave the original line → a **duplicated line**.
+- A next-line end anchor (`{line: line+1, offset: 1}`) swallows the trailing
+  newline → the suggestion **joins** onto the following line.
+- The whole-line end offset (computed from the checked-out file) replaces the
+  line(s) exactly.
+
+For a multi-line suggestion, set `start_line` (first line) and `line` (last
+line) and put every replacement line in the ` ```suggestion ` body. Write the
+body byte-for-byte (literal `<`, `>`, `&`, `"`; never HTML entities) with the
+original indentation. The agent only supplies line numbers and text — no offset
+math. (If the file cannot be read from the workspace, the end offset falls back
+to `1`, which is fine for a plain inline comment but may not apply cleanly as a
+suggestion.)
+
 **Configuration options (front matter):**
 ```yaml
 safe-outputs:
